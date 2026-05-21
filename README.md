@@ -1,8 +1,8 @@
-# Carrum Health — Automated Clinical Routing Navigator
+# Care Navigator — Automated Clinical Routing Navigator
 
 ## Overview
 
-A protocol-driven decision-support tool for the Carrum Care Team. Processes raw patient
+A protocol-driven decision-support tool for the Care Team. Processes raw patient
 transcripts, extracts clinical facts via an LLM, and applies deterministic SOP rules to
 generate routing recommendations with human-in-the-loop verification.
 
@@ -123,7 +123,7 @@ RUN_EVALS=1 pytest -v
 ## File Structure
 
 ```
-carrum-navigator/
+care-navigator/
 ├── app.py                          # Streamlit UI application
 ├── logic_engine.py                 # Clinical Processor + SOP Engine
 ├── requirements.txt                # Runtime dependencies

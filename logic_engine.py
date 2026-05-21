@@ -1,5 +1,5 @@
 """
-Carrum Health — Automated Clinical Routing Navigator
+Care Navigator — Automated Clinical Routing Navigator
 Core Logic Engine: Clinical Processor & SOP Matching
 """
 
@@ -120,7 +120,7 @@ STATUS_COLORS = {
 
 # ── Extraction Prompt ─────────────────────────────────────────────────────────
 
-EXTRACTION_SYSTEM_PROMPT = """You are a clinical data extraction specialist for Carrum Health. 
+EXTRACTION_SYSTEM_PROMPT = """You are a clinical data extraction specialist for Care Navigator. 
 Your task is to read a patient transcript and extract specific clinical facts needed for 
 surgical case routing. You must return ONLY a valid JSON object — no commentary, no markdown fences.
 

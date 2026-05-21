@@ -1,5 +1,5 @@
 """
-Carrum Health — Automated Clinical Routing Navigator
+Care Navigator — Automated Clinical Routing Navigator
 Streamlit Application
 """
 
@@ -22,7 +22,7 @@ except StreamlitSecretNotFoundError:
 # ── Page Config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Carrum Clinical Navigator",
+    page_title="Care Clinical Navigator",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -318,7 +318,7 @@ Care Team: "Okay, we'll note that down. Finally, any pending major dental work n
 Sarah T: "Yes, I just had my clean-up done in May, so I'm good there."
 Care Team: "Great, thanks Sarah. We'll finalize this part of your profile and get you set up for an initial consult." """,
 
-    "Sample 2 — Bob L. (Joint)": """[Care Team] Hi Bob, this is the Carrum care team. We are wrapping up your initial profile to get you matched with your surgeon. We need to clarify a few answers from your questionnaire.
+    "Sample 2 — Bob L. (Joint)": """[Care Team] Hi Bob, this is the Care Navigator team. We are wrapping up your initial profile to get you matched with your surgeon. We need to clarify a few answers from your questionnaire.
 [Bob L] ok what do you need? my hip is killing me.
 [Care Team] We're here to help. First, can you confirm if you have used any prescription pain medications, even just sometimes, to manage the hip pain?
 [Bob L] yeah. My PCP gave me oxycodone 5mg to take when it was really bad, but i've been on it pretty much daily for 2 years.
@@ -331,7 +331,7 @@ Care Team: "Great, thanks Sarah. We'll finalize this part of your profile and ge
 [Care Team] Got it. Thanks Bob! We have what we need. We'll be tough on next steps in the next 48 hours.""",
 
     "Sample 3 — Maria V. (Joint)": """Care Team: "Hi Maria, I'm just trying to verify the final pieces of information for your intake so we can route your case appropriately. We need to check on your comorbidities. Do you have a history of HIV, AIDS, end-stage renal failure, or active cancer treatment?"
-Maria V: "Look, I've already answered these questions for my regular doctor three times this month. Why does Carrum need them again? I don't have any of those things. I'm just getting old and my knee is falling apart because nobody will help me!"
+Maria V: "Look, I've already answered these questions for my regular doctor three times this month. Why does Care Navigator need them again? I don't have any of those things. I'm just getting old and my knee is falling apart because nobody will help me!"
 Care Team: "I understand the frustration, Maria. We just want to make sure we have the most current info for the surgeon. How about your blood sugar? If you have diabetes, do you know what your last HbA1c lab result was? The most recent one."
 Maria V: "I just had my physical last week and my doctor was annoyed because it was a 7.4. He's always nagging me to work on that, but it's hard when you can't walk to exercise!"
 Care Team: "I hear you. That 7.4 is a helpful number for us to have. Let's talk about lifestyle—and please be honest so we can keep you safe during surgery. Are you currently an active smoker, or have you quit within the last three months?"
@@ -344,7 +344,7 @@ Care Team: "Perfect, that's exactly the information we need. And Maria, I hear t
 Maria V: "I know... I just want to be able to walk to the mailbox without sitting down. It's a lot to manage on my own."
 Care Team: "We're going to help you manage it. Here is what happens next: I'm going to review your details and follow up by Thursday afternoon with a clear roadmap for the next few weeks."
 Maria V: "Yes. Thursday afternoon. I'll be waiting for the call. Thank you for listening to me complain."
-Care Team: "You aren't complaining, Maria—you're advocating for your health. We're glad to have you with Carrum." """,
+Care Team: "You aren't complaining, Maria—you're advocating for your health. We're glad to have you with Care Navigator." """,
 }
 
 # ── Helper Renderers ──────────────────────────────────────────────────────────
@@ -366,7 +366,7 @@ def render_status_pill(status: str) -> str:
 st.markdown("""
 <div class="nav-header">
   <div>
-    <div class="subtitle">Carrum Health</div>
+    <div class="subtitle">Care Navigator</div>
     <h1>Clinical Routing Navigator</h1>
   </div>
   <div class="nav-badge">Clinical Processor v1.0</div>
@@ -573,7 +573,7 @@ if "result" in st.session_state:
             st.download_button(
                 label="⬇ Download Finalized JSON",
                 data=json.dumps(final_output, indent=2),
-                file_name=f"carrum_{(patient_name or 'patient').replace(' ', '_').lower()}_routing.json",
+                file_name=f"care_{(patient_name or 'patient').replace(' ', '_').lower()}_routing.json",
                 mime="application/json",
                 use_container_width=True,
             )
@@ -597,6 +597,6 @@ else:
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
-    '<div style="text-align:center;font-size:0.72rem;color:#BCBAB5;font-family:\'DM Mono\',monospace;">Carrum Health · Clinical Routing Navigator · Automated Logic Engine · For internal Care Team use only</div>',
+    '<div style="text-align:center;font-size:0.72rem;color:#BCBAB5;font-family:\'DM Mono\',monospace;">Care Navigator · Clinical Routing Navigator · Automated Logic Engine · For internal Care Team use only</div>',
     unsafe_allow_html=True
 )

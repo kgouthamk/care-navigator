@@ -1,4 +1,4 @@
-# Unit Test Report — Carrum Clinical Routing Navigator
+# Unit Test Report — Care Clinical Routing Navigator
 **Date:** April 23, 2026
 **Runtime:** 1.75s
 **Result:** 45/45 passed · 0 failed · 0 skipped

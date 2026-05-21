@@ -1,4 +1,4 @@
-# Eval Report — Carrum Clinical Routing Navigator
+# Eval Report — Care Clinical Routing Navigator
 **Date:** April 23, 2026
 **Model:** gemini-2.5-flash (temperature=0)
 **Suite:** 10 LLM eval tests · 45 unit tests

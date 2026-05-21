@@ -1,4 +1,4 @@
-Care Team: "Hi Gerald, I'm calling from Carrum Health to complete your knee replacement intake. I want to be upfront with you — there are several items we need to work through today."
+Care Team: "Hi Gerald, I'm calling from Care Navigator to complete your knee replacement intake. I want to be upfront with you — there are several items we need to work through today."
 Gerald: "Go ahead."
 Care Team: "Smoking status first."
 Gerald: "I smoke. Half pack a day, been doing it for thirty years. I know what you're going to say."
