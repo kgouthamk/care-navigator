@@ -528,10 +528,12 @@ html,body{{font-family:var(--font);background:var(--gray1);color:var(--gray7);fo
     <div class="tab-bar">
       <div class="tab active" onclick="switchTab('annotated',this)">Annotated</div>
       <div class="tab" onclick="switchTab('raw',this)">Raw</div>
+      <div class="tab" onclick="switchTab('json',this)">JSON</div>
     </div>
     <div class="transcript-scroll scrollbar-thin">
       <div class="transcript-text" id="transcript-annotated">{annotated_html}</div>
       <div class="transcript-text" id="transcript-raw" style="display:none">{_html.escape(transcript)}</div>
+      <div class="transcript-text" id="transcript-json" style="display:none;font-size:11px;line-height:1.6">{_html.escape(final_data_json)}</div>
     </div>
   </div>
 
@@ -620,6 +622,8 @@ function switchTab(mode, el) {{
   el.classList.add('active');
   document.getElementById('transcript-annotated').style.display = mode === 'annotated' ? '' : 'none';
   document.getElementById('transcript-raw').style.display = mode === 'raw' ? '' : 'none';
+  document.getElementById('transcript-json').style.display = mode === 'json' ? '' : 'none';
+  setTimeout(autoHeight, 50);
 }}
 
 function handleHLClick(el) {{
@@ -1154,11 +1158,6 @@ if "result" in st.session_state:
     result = st.session_state["result"]
     workspace_html = build_workspace_html(result, st.session_state["transcript"])
     components.html(workspace_html, height=1200, scrolling=False)
-
-    # Raw JSON expander below the workspace
-    st.markdown("<br>", unsafe_allow_html=True)
-    with st.expander("🔍 View Raw Logic Engine JSON", expanded=False):
-        st.json(result)
 else:
     # Empty state
     st.markdown("""
