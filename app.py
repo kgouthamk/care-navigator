@@ -1174,7 +1174,7 @@ if process_btn:
 if "result" in st.session_state:
     result = st.session_state["result"]
     workspace_html = build_workspace_html(result, st.session_state["transcript"])
-    components.html(workspace_html, height=1200, scrolling=False)
+    components.html(workspace_html, height=1400, scrolling=True)
 else:
     # Empty state
     st.markdown("""
