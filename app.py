@@ -428,7 +428,7 @@ html,body{{font-family:var(--font);background:var(--gray1);color:var(--gray7);fo
 .tab-bar{{display:flex;gap:2px;padding:8px 12px 0;background:white;border-bottom:1px solid var(--gray3);flex-shrink:0}}
 .tab{{padding:5px 10px;border-radius:6px 6px 0 0;font-size:11px;font-weight:500;color:var(--gray4);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}}
 .tab.active{{color:var(--navy);border-bottom-color:var(--navy)}}
-.transcript-scroll{{overflow-y:auto;padding:16px;max-height:80vh}}
+.transcript-scroll{{padding:16px}}
 .transcript-text{{font-family:var(--mono);font-size:12px;line-height:1.9;color:var(--gray6);white-space:pre-wrap}}
 .highlight{{border-radius:3px;cursor:pointer;transition:all .15s;position:relative}}
 .hl-red{{background:#FEE2E2;border-bottom:2px solid #EF4444}}
@@ -650,9 +650,7 @@ document.addEventListener('mousemove', function(e) {{
 }});
 
 function autoHeight() {{
-  var ws = document.querySelector('.workspace');
-  var h = ws ? ws.offsetTop + ws.offsetHeight + 16 : document.documentElement.offsetHeight + 16;
-  window.parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: h}}, '*');
+  window.parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: document.documentElement.scrollHeight + 16}}, '*');
 }}
 
 function toggleRule(id) {{
