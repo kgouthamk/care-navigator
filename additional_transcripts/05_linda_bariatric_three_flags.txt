@@ -1,4 +1,4 @@
-Care Team: "Hi Linda, calling from Carrum Health to complete your bariatric profile. First question — have you had any previous weight-loss procedures?"
+Care Team: "Hi Linda, calling from Care Navigator to complete your bariatric profile. First question — have you had any previous weight-loss procedures?"
 Linda: "Yes, I had a lap band put in 2015. It slipped about two years later and they removed it. I've basically been dealing with the aftermath ever since."
 Care Team: "Thank you for that history. Have you had an endoscopy in the last three months?"
 Linda: "No. My last one was probably two years ago when they were checking the band. Nobody told me I'd need a new one."

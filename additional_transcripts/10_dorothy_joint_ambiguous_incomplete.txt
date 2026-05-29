@@ -1,6 +1,6 @@
 Care Team: "Hi, am I speaking with Dorothy?"
 Dorothy: "Yes, that's me. Sorry, I'm a little hard of hearing — can you speak up?"
-Care Team: "Of course. I'm calling from Carrum Health about your upcoming surgery consultation."
+Care Team: "Of course. I'm calling from Care Navigator about your upcoming surgery consultation."
 Dorothy: "Yes, my doctor referred me. Something about my hip, I think. Or maybe the knee. I have problems with both."
 Care Team: "We have you noted for joint replacement. Let me ask a few questions. Are you a smoker?"
 Dorothy: "What? Oh — no. Well, I used to be. A long time ago."
