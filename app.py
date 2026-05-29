@@ -662,7 +662,8 @@ function toggleRule(id) {{
   const isOpen = body.classList.contains('open');
   body.classList.toggle('open');
   ch.style.transform = isOpen ? '' : 'rotate(90deg)';
-  setTimeout(autoHeight, 10);
+  autoHeight();
+  setTimeout(autoHeight, 250);
 }}
 
 function jumpToHL(e, ruleId) {{
