@@ -458,8 +458,8 @@ html,body{{font-family:var(--font);background:var(--gray1);color:var(--gray7);fo
 .rule-body.open{{display:block}}
 .jump-btn-sm{{display:inline-flex;align-items:center;gap:3px;background:transparent;color:var(--gray4);border:1px solid var(--gray3);padding:4px 8px;border-radius:4px;font-size:10px;font-family:var(--font);cursor:pointer;transition:all .15s;flex-shrink:0;white-space:nowrap}}
 .jump-btn-sm:hover{{background:var(--navy);color:white;border-color:var(--navy)}}
-.vt-jump{{width:22px;height:22px;border:1px solid var(--gray3);background:white;border-radius:4px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--gray4);flex-shrink:0;transition:all .15s;padding:0}}
-.vt-jump:hover{{background:var(--navy);color:white;border-color:var(--navy)}}
+.vt-jump{{width:22px;height:22px;border:none;background:var(--navy);border-radius:4px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:white;flex-shrink:0;padding:0}}
+.vt-jump:hover{{background:var(--blue)}}
 .rule-evidence{{background:var(--gray1);border:1px solid var(--gray3);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:11px;font-family:var(--mono);color:var(--gray6);line-height:1.6}}
 .evidence-label{{font-size:10px;font-weight:600;color:var(--gray4);letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px;font-family:var(--font)}}
 .conf-bar-wrap{{margin-top:8px}}
@@ -693,7 +693,7 @@ function setFact(e, key, val) {{
 function rerenderRow(key) {{
   const row = document.getElementById('vrow-' + key);
   if (!row) return;
-  ['Y','N','?'].forEach((v, i) => {{
+  ['Yes','No','?'].forEach((v, i) => {{
     const ids = ['ybtn-','nbtn-','ubtn-'];
     const cls = ['selected-yes','selected-no','selected-unk'];
     const btn = document.getElementById(ids[i] + key);
