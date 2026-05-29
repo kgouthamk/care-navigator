@@ -650,7 +650,9 @@ document.addEventListener('mousemove', function(e) {{
 }});
 
 function autoHeight() {{
-  window.parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: document.body.scrollHeight}}, '*');
+  var ws = document.querySelector('.workspace');
+  var h = ws ? Math.ceil(ws.getBoundingClientRect().bottom) + 16 : document.body.scrollHeight + 16;
+  window.parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: h}}, '*');
 }}
 
 function toggleRule(id) {{
