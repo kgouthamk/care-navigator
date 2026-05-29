@@ -1,5 +1,5 @@
 """
-Carrum Health — Automated Clinical Routing Navigator
+Care Navigator — Automated Clinical Routing Navigator
 Core Logic Engine: Clinical Processor & SOP Matching
 """
 
@@ -120,7 +120,7 @@ STATUS_COLORS = {
 
 # ── Extraction Prompt ─────────────────────────────────────────────────────────
 
-EXTRACTION_SYSTEM_PROMPT = """You are a clinical data extraction specialist for Carrum Health. 
+EXTRACTION_SYSTEM_PROMPT = """You are a clinical data extraction specialist for Care Navigator. 
 Your task is to read a patient transcript and extract specific clinical facts needed for 
 surgical case routing. You must return ONLY a valid JSON object — no commentary, no markdown fences.
 
@@ -146,7 +146,18 @@ Extract the following fields. Use null if information is not mentioned or unclea
   "rd_description": string or null,
   "chronic_infections": string or null,
   "other_conditions": string or null,
-  "clinical_notes": string
+  "clinical_notes": string,
+  "evidence_map": {
+    "active_smoker":                    {"quote": "verbatim text from transcript or null", "confidence": 0},
+    "has_pt_history":                   {"quote": "verbatim text from transcript or null", "confidence": 0},
+    "hba1c_value":                      {"quote": "verbatim text from transcript or null", "confidence": 0},
+    "daily_opioid_use":                 {"quote": "verbatim text from transcript or null", "confidence": 0},
+    "dental_last_visit_within_6_months":{"quote": "verbatim text from transcript or null", "confidence": 0},
+    "dental_pending_work":              {"quote": "verbatim text from transcript or null", "confidence": 0},
+    "prior_weight_loss_surgery":        {"quote": "verbatim text from transcript or null", "confidence": 0},
+    "recent_egd_within_3_months":       {"quote": "verbatim text from transcript or null", "confidence": 0},
+    "has_registered_dietician":         {"quote": "verbatim text from transcript or null", "confidence": 0}
+  }
 }
 
 Critical extraction rules:
@@ -159,6 +170,7 @@ Critical extraction rules:
 - clinical_notes: 2-3 sentence plain-English summary of the patient's situation and key clinical concerns
 - recent_egd_within_3_months: if not mentioned and case is Bariatric, set to false
 - has_registered_dietician: if patient says they saw a nutritionist "once" but does not have their own RD = false
+- evidence_map: for each key, "quote" must be VERBATIM text copied exactly from the transcript (preserve original punctuation and casing). If the fact was not mentioned at all, set "quote" to null. "confidence" is an integer 0-100: 90+ = explicitly stated; 70-89 = strongly implied; 50-69 = uncertain/inferred; below 50 = guessing.
 """
 
 # ── Processing Functions ──────────────────────────────────────────────────────
@@ -186,7 +198,7 @@ def extract_clinical_facts(transcript: str) -> dict:
                 config=types.GenerateContentConfig(
                     system_instruction=EXTRACTION_SYSTEM_PROMPT,
                     temperature=0,
-                    max_output_tokens=2500,
+                    max_output_tokens=4000,
                     response_mime_type="application/json",
                 ),
             )
@@ -338,4 +350,5 @@ def process_transcript(transcript: str) -> dict:
         "Logic_Results": triggered_rules,
         "Recommended_Actions": recommended_actions,
         "Overall_Case_Status": overall_status,
+        "Evidence_Map": facts.get("evidence_map", {}),
     }

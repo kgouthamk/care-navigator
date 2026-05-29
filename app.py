@@ -1,11 +1,14 @@
 """
-Carrum Health — Automated Clinical Routing Navigator
+Care Navigator — Automated Clinical Routing Navigator
 Streamlit Application
 """
 
+import html as _html
 import json
 import os
+import unicodedata
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit.errors import StreamlitSecretNotFoundError
 from logic_engine import process_transcript, STATUS_COLORS, SOP_RULES
 
@@ -22,251 +25,768 @@ except StreamlitSecretNotFoundError:
 # ── Page Config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Carrum Clinical Navigator",
+    page_title="Care Clinical Navigator",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
+# ── SOP lookup helpers ───────────────────────────────────────────────────────
+
+# Map rule_id → fact_key and fact_key → rule_id
+RULE_FACT_KEY = {r["id"]: r["fact_key"] for r in SOP_RULES}
+FACT_TO_RULE_ID = {r["fact_key"]: r["id"] for r in SOP_RULES}
+
+# Highlight colour per status (mirrors prototype colour semantics)
+_STATUS_HL = {
+    "Ineligible":    "red",
+    "High Complexity": "red",
+    "Deferred":      "red",
+    "Review":        "amber",
+    "Action Required": "amber",
+    "Hold":          "amber",
+    "Revision Case": "purple",
+    "Clear":         "green",
+}
+
+
+def _hl_color_for_rule(rule_id: str) -> str:
+    """Return highlight colour token for a rule."""
+    for r in SOP_RULES:
+        if r["id"] == rule_id:
+            return _STATUS_HL.get(r["case_status"], "blue")
+    return "blue"
+
+
+def _norm_text(s: str) -> str:
+    """Normalise typographic characters so LLM quotes match transcript text."""
+    if not s:
+        return s
+    # Straight quotes
+    s = s.replace("‘", "'").replace("’", "'")
+    s = s.replace("“", '"').replace("”", '"')
+    # Dashes
+    s = s.replace("—", "--").replace("–", "-")
+    # Ellipsis
+    s = s.replace("…", "...")
+    # Normalise unicode to NFC, then strip remaining
+    s = unicodedata.normalize("NFC", s)
+    return s
+
+
+def _build_annotated_html(transcript: str, evidence_map: dict, sop_flags: dict) -> str:
+    """
+    Return the transcript text with evidence quotes wrapped in highlight spans.
+    Overlapping / duplicate quotes are deduplicated. Non-matched text is HTML-escaped.
+    """
+    norm_transcript = _norm_text(transcript)
+
+    # Collect (start, end, rule_id, color, label) for each matched quote
+    spans = []
+    for fact_key, ev in evidence_map.items():
+        if not isinstance(ev, dict):
+            continue
+        quote = ev.get("quote")
+        if not quote:
+            continue
+        norm_quote = _norm_text(quote)
+        idx = norm_transcript.find(norm_quote)
+        if idx == -1:
+            # Try case-insensitive
+            lower_t = norm_transcript.lower()
+            lower_q = norm_quote.lower()
+            idx = lower_t.find(lower_q)
+        if idx == -1:
+            continue
+        end = idx + len(norm_quote)
+        rule_id = FACT_TO_RULE_ID.get(fact_key, "")
+        color = _hl_color_for_rule(rule_id) if rule_id else "blue"
+        # Use original rule status as label
+        label = ""
+        for r in SOP_RULES:
+            if r["fact_key"] == fact_key:
+                label = f"{r['id']}: {r['finding']}"
+                break
+        spans.append((idx, end, rule_id, color, label))
+
+    if not spans:
+        return _html.escape(transcript)
+
+    # Sort by start; resolve overlaps by keeping longest span
+    spans.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+    merged = []
+    cursor = 0
+    for span in spans:
+        s, e, rid, col, lbl = span
+        if s < cursor:
+            continue  # skip overlap
+        merged.append(span)
+        cursor = e
+
+    # Build HTML
+    parts = []
+    cursor = 0
+    for s, e, rid, col, lbl in merged:
+        if cursor < s:
+            parts.append(_html.escape(transcript[cursor:s]))
+        inner = _html.escape(transcript[s:e])
+        parts.append(
+            f'<span class="highlight hl-{col}" data-rule="{_html.escape(rid)}" '
+            f'data-label="{_html.escape(lbl)}" onclick="handleHLClick(this)">{inner}</span>'
+        )
+        cursor = e
+    if cursor < len(transcript):
+        parts.append(_html.escape(transcript[cursor:]))
+    return "".join(parts)
+
+
+def _conf_color(conf: int) -> str:
+    if conf >= 85:
+        return "#22C55E"
+    if conf >= 65:
+        return "#F59E0B"
+    return "#EF4444"
+
+
+def _conf_label(conf: int) -> str:
+    if conf >= 85:
+        return "High"
+    if conf >= 65:
+        return "Med"
+    return "Low"
+
+
+def _conf_dot_class(conf: int) -> str:
+    if conf >= 85:
+        return "conf-high"
+    if conf >= 65:
+        return "conf-med"
+    return "conf-low"
+
+
+def _build_rule_cards_html(logic_results: list, evidence_map: dict) -> str:
+    """Build expandable rule-card HTML for all triggered rules."""
+    parts = []
+    for i, rule in enumerate(logic_results):
+        rid = rule["rule_id"]
+        color = STATUS_COLORS.get(rule["case_status"], "#6B7280")
+        fact_key = RULE_FACT_KEY.get(rid, "")
+        ev = evidence_map.get(fact_key, {}) if fact_key else {}
+        quote = ev.get("quote") if isinstance(ev, dict) else None
+        conf = int(ev.get("confidence", 0)) if isinstance(ev, dict) else 0
+        open_cls = "open" if i == 0 else ""
+        chevron_rot = "rotate(90deg)" if i == 0 else "none"
+        evidence_html = (
+            f'<div class="rule-evidence">{_html.escape(str(quote))}</div>'
+            if quote else
+            '<div class="rule-evidence" style="color:var(--gray4);font-style:italic">No verbatim quote extracted</div>'
+        )
+        note_html = ""
+        if quote:
+            note_html = f'<div style="font-size:11px;color:var(--gray5);margin-top:6px">Confidence: {conf}% · {_conf_label(conf)}</div>'
+        parts.append(f"""
+<div class="rule-card" data-ruleid="{_html.escape(rid)}" onclick="toggleRule('{rid}')">
+  <div class="rule-card-header">
+    <div class="rule-left-bar" style="background:{color}"></div>
+    <div style="flex:1;min-width:0">
+      <div class="rule-id">{_html.escape(rid)} · {_html.escape(rule['category'])}</div>
+      <div class="rule-status" style="color:{color}">{_html.escape(rule['case_status'])} — {_html.escape(rule['finding'])}</div>
+      <div class="rule-action">{_html.escape(rule['action'])}</div>
+    </div>
+    <div id="chevron-{rid}" style="font-size:18px;color:var(--gray4);margin-left:8px;transition:transform 0.2s;transform:{chevron_rot}">›</div>
+  </div>
+  <div class="rule-body {open_cls}" id="body-{rid}">
+    <div style="padding-top:10px">
+      <div class="evidence-label">Evidence from transcript</div>
+      {evidence_html}
+      {'<div class="conf-bar-wrap"><div class="conf-bar-label"><span>Extraction confidence</span><span style="font-weight:500">' + str(conf) + '% · ' + _conf_label(conf) + '</span></div><div class="conf-bar"><div class="conf-fill" style="width:' + str(conf) + '%;background:' + _conf_color(conf) + '"></div></div></div>' if quote else ''}
+      {note_html}
+      <button class="jump-btn" onclick="jumpToHL(event,'{_html.escape(rid)}')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        Jump to evidence
+      </button>
+    </div>
+  </div>
+</div>""")
+    return "\n".join(parts)
+
+
+def _get_verify_facts(case_type: str, details: dict, sop_flags: dict, evidence_map: dict) -> list:
+    """Return ordered list of fact-verification rows appropriate for the case type."""
+    common = [
+        {
+            "key": "dental_clearance_needed",
+            "label": "Dental clearance needed",
+            "extracted": sop_flags.get("dental_clearance_needed"),
+            "conf": int((evidence_map.get("dental_last_visit_within_6_months") or {}).get("confidence", 50)),
+            "rule": "GEN-001",
+        },
+    ]
+    joint = [
+        {
+            "key": "active_smoker",
+            "label": "Active smoker",
+            "extracted": details.get("active_smoker"),
+            "conf": int((evidence_map.get("active_smoker") or {}).get("confidence", 50)),
+            "rule": "JNT-001",
+        },
+        {
+            "key": "has_pt_history",
+            "label": "Formal PT history (6+ weeks)",
+            "extracted": details.get("has_pt_history"),
+            "conf": int((evidence_map.get("has_pt_history") or {}).get("confidence", 50)),
+            "rule": "JNT-002",
+        },
+        {
+            "key": "hba1c_elevated",
+            "label": f"HbA1c > 7.0 ({details.get('hba1c_value') or 'not stated'})",
+            "extracted": sop_flags.get("hba1c_elevated"),
+            "conf": int((evidence_map.get("hba1c_value") or {}).get("confidence", 50)),
+            "rule": "JNT-003",
+        },
+        {
+            "key": "daily_opioid_over_3_months",
+            "label": "Daily opioid use > 3 months",
+            "extracted": sop_flags.get("daily_opioid_over_3_months"),
+            "conf": int((evidence_map.get("daily_opioid_use") or {}).get("confidence", 50)),
+            "rule": "JNT-004",
+        },
+    ]
+    bariatric = [
+        {
+            "key": "prior_weight_loss_surgery",
+            "label": "Prior weight-loss surgery",
+            "extracted": details.get("prior_weight_loss_surgery"),
+            "conf": int((evidence_map.get("prior_weight_loss_surgery") or {}).get("confidence", 50)),
+            "rule": "BAR-001",
+        },
+        {
+            "key": "no_recent_egd",
+            "label": "No recent EGD (< 3 months)",
+            "extracted": sop_flags.get("no_recent_egd"),
+            "conf": int((evidence_map.get("recent_egd_within_3_months") or {}).get("confidence", 50)),
+            "rule": "BAR-002",
+        },
+        {
+            "key": "no_registered_dietician",
+            "label": "No Registered Dietician identified",
+            "extracted": sop_flags.get("no_registered_dietician"),
+            "conf": int((evidence_map.get("has_registered_dietician") or {}).get("confidence", 50)),
+            "rule": "BAR-003",
+        },
+    ]
+    if case_type == "Joint":
+        return common + joint
+    elif case_type == "Bariatric":
+        return common + bariatric
+    else:
+        return common + joint + bariatric
+
+
+def _build_verify_rows_html(verify_facts: list) -> str:
+    rows = []
+    for f in verify_facts:
+        val = f["extracted"]
+        val_class = "ve-true" if val is True else ("ve-false" if val is False else "ve-null")
+        val_label = "Yes" if val is True else ("No" if val is False else "null")
+        dot_cls = _conf_dot_class(f["conf"])
+        rows.append(f"""<div class="verify-row" id="vrow-{_html.escape(f['key'])}">
+  <div class="verify-label">{_html.escape(f['label'])}
+    <div style="font-size:10px;color:var(--gray4);font-family:var(--mono);margin-top:1px">extracted: <span class="{val_class}">{val_label}</span></div>
+  </div>
+  <div class="verify-conf {dot_cls}" title="{f['conf']}% confidence"></div>
+  <div class="verify-toggle">
+    <button class="vt-btn" onclick="setFact(event,'{_html.escape(f['key'])}','Yes')" title="Confirm Yes" id="ybtn-{_html.escape(f['key'])}">Y</button>
+    <button class="vt-btn" onclick="setFact(event,'{_html.escape(f['key'])}','No')" title="Confirm No" id="nbtn-{_html.escape(f['key'])}">N</button>
+    <button class="vt-btn" onclick="setFact(event,'{_html.escape(f['key'])}','?')" title="Unknown" id="ubtn-{_html.escape(f['key'])}">?</button>
+  </div>
+</div>""")
+    return "\n".join(rows)
+
+
+def build_workspace_html(result: dict, transcript: str) -> str:
+    """Build the complete self-contained workspace HTML (runs inside st.components iframe)."""
+    pf = result["Patient_Facts"]
+    details = pf.get("extracted_details", {})
+    evidence_map = result.get("Evidence_Map", {})
+    logic_results = result["Logic_Results"]
+    sop_flags = result["SOP_Flags"]
+    overall = result["Overall_Case_Status"]
+    overall_color = STATUS_COLORS.get(overall, "#6B7280")
+    patient_name = pf.get("patient_name") or "Unknown Patient"
+    case_type = pf.get("case_type", "Unknown")
+    clinical_summary = pf.get("clinical_summary", "")
+    flags_true = sum(1 for v in sop_flags.values() if v)
+    low_conf_count = sum(
+        1 for ev in evidence_map.values()
+        if isinstance(ev, dict) and int(ev.get("confidence", 100)) < 70
+    )
+
+    annotated_html = _build_annotated_html(transcript, evidence_map, sop_flags)
+    rule_cards_html = _build_rule_cards_html(logic_results, evidence_map)
+    verify_facts = _get_verify_facts(case_type, details, sop_flags, evidence_map)
+    verify_rows_html = _build_verify_rows_html(verify_facts)
+    total_facts = len(verify_facts)
+
+    # Status pills for the header
+    status_pills_html = ""
+    seen = set()
+    for rule in logic_results:
+        s = rule["case_status"]
+        if s not in seen:
+            seen.add(s)
+            color = STATUS_COLORS.get(s, "#6B7280")
+            status_pills_html += f'<span class="status-pill" style="background:{color};color:white">{_html.escape(s)}</span>'
+    if not status_pills_html:
+        status_pills_html = f'<span class="status-pill" style="background:{overall_color};color:white">{_html.escape(overall)}</span>'
+
+    # Fact keys for JS
+    fact_keys_json = json.dumps([f["key"] for f in verify_facts])
+    final_data_json = json.dumps(result, indent=2)
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@300;400;500;600&display=swap');
+*{{box-sizing:border-box;margin:0;padding:0}}
+:root{{
+  --navy:#0A1628;--blue:#1A4F72;--blue2:#2E86AB;
+  --green:#166534;--greenbg:#DCFCE7;--greentxt:#14532D;
+  --amber:#92400E;--amberbg:#FEF3C7;--ambertxt:#78350F;
+  --red:#991B1B;--redbg:#FEE2E2;--redtxt:#7F1D1D;
+  --purple:#5B21B6;--purpbg:#EDE9FE;--purptxt:#4C1D95;
+  --gray1:#F8F7F4;--gray2:#F0EDE8;--gray3:#E5E2DC;
+  --gray4:#9CA3AF;--gray5:#6B7280;--gray6:#374151;--gray7:#1F2937;
+  --font:'Sora',sans-serif;--mono:'IBM Plex Mono',monospace;
+}}
+html,body{{height:100%;overflow:hidden;font-family:var(--font);background:var(--gray1);color:var(--gray7);font-size:14px;line-height:1.6}}
+.workspace{{display:grid;grid-template-columns:1fr 420px;height:100vh}}
+/* LEFT */
+.left-panel{{display:flex;flex-direction:column;background:white;border-right:1px solid var(--gray3)}}
+.panel-header{{padding:12px 16px;border-bottom:1px solid var(--gray3);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}}
+.panel-label{{font-size:10px;font-weight:600;color:var(--gray4);letter-spacing:.1em;text-transform:uppercase}}
+.legend{{display:flex;gap:10px;align-items:center}}
+.legend-item{{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--gray5)}}
+.dot{{width:8px;height:8px;border-radius:50%;flex-shrink:0}}
+.tab-bar{{display:flex;gap:2px;padding:8px 12px 0;background:white;border-bottom:1px solid var(--gray3);flex-shrink:0}}
+.tab{{padding:5px 10px;border-radius:6px 6px 0 0;font-size:11px;font-weight:500;color:var(--gray4);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}}
+.tab.active{{color:var(--navy);border-bottom-color:var(--navy)}}
+.transcript-scroll{{flex:1;overflow-y:auto;padding:16px}}
+.transcript-text{{font-family:var(--mono);font-size:12px;line-height:1.9;color:var(--gray6);white-space:pre-wrap}}
+.highlight{{border-radius:3px;cursor:pointer;transition:all .15s;position:relative}}
+.hl-red{{background:#FEE2E2;border-bottom:2px solid #EF4444}}
+.hl-amber{{background:#FEF3C7;border-bottom:2px solid #F59E0B}}
+.hl-green{{background:#DCFCE7;border-bottom:2px solid #22C55E}}
+.hl-blue{{background:#DBEAFE;border-bottom:2px solid #3B82F6}}
+.hl-purple{{background:#EDE9FE;border-bottom:2px solid #7C3AED}}
+.highlight:hover{{filter:brightness(.93)}}
+.highlight.active-hl{{outline:2px solid var(--navy);outline-offset:2px}}
+.hl-tooltip{{display:none;position:fixed;background:var(--navy);color:white;padding:6px 10px;border-radius:6px;font-size:11px;font-family:var(--font);z-index:100;max-width:220px;line-height:1.5;pointer-events:none}}
+.hl-tooltip.show{{display:block}}
+/* RIGHT */
+.right-panel{{display:flex;flex-direction:column;background:var(--gray1)}}
+.right-panel .panel-header{{background:white;padding:12px 16px;border-bottom:1px solid var(--gray3);flex-direction:column;gap:8px}}
+.right-scroll{{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}}
+.status-pill{{padding:3px 10px;border-radius:100px;font-size:11px;font-weight:600}}
+.progress-bar{{height:2px;background:var(--gray3);position:relative;flex-shrink:0}}
+.progress-fill{{height:100%;background:var(--blue2);transition:width .3s}}
+/* Rule cards */
+.rule-card{{background:white;border-radius:8px;border:1px solid var(--gray3);overflow:hidden}}
+.rule-card-header{{padding:10px 12px;display:flex;align-items:flex-start;gap:10px;cursor:pointer}}
+.rule-id{{font-family:var(--mono);font-size:10px;color:var(--gray4);margin-bottom:2px}}
+.rule-status{{font-size:12px;font-weight:600;margin-bottom:2px}}
+.rule-action{{font-size:12px;color:var(--gray6);line-height:1.5}}
+.rule-left-bar{{width:3px;border-radius:2px;flex-shrink:0;margin-top:2px;align-self:stretch}}
+.rule-body{{display:none;padding:0 12px 12px;border-top:1px solid var(--gray2)}}
+.rule-body.open{{display:block}}
+.rule-evidence{{background:var(--gray1);border:1px solid var(--gray3);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:11px;font-family:var(--mono);color:var(--gray6);line-height:1.6}}
+.evidence-label{{font-size:10px;font-weight:600;color:var(--gray4);letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px;font-family:var(--font)}}
+.conf-bar-wrap{{margin-top:8px}}
+.conf-bar-label{{font-size:10px;color:var(--gray5);margin-bottom:4px;display:flex;justify-content:space-between}}
+.conf-bar{{height:4px;background:var(--gray3);border-radius:2px;overflow:hidden}}
+.conf-fill{{height:100%;border-radius:2px;transition:width .3s}}
+.jump-btn{{display:inline-flex;align-items:center;gap:4px;margin-top:8px;background:var(--navy);color:white;border:none;padding:5px 10px;border-radius:5px;font-size:11px;font-family:var(--font);cursor:pointer}}
+.jump-btn:hover{{background:var(--blue)}}
+/* Verify */
+.verify-section{{background:white;border-radius:8px;border:1px solid var(--gray3);overflow:hidden}}
+.verify-header{{padding:10px 12px;border-bottom:1px solid var(--gray3);display:flex;justify-content:space-between;align-items:center}}
+.verify-title{{font-size:12px;font-weight:600;color:var(--gray7)}}
+.verify-subtitle{{font-size:10px;color:var(--gray4)}}
+.verify-row{{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--gray2)}}
+.verify-row:last-child{{border-bottom:none}}
+.verify-label{{flex:1;font-size:12px;color:var(--gray6)}}
+.verify-extracted{{font-size:11px;font-family:var(--mono);padding:2px 7px;border-radius:4px;flex-shrink:0}}
+.ve-true{{background:var(--redbg);color:var(--redtxt)}}
+.ve-false{{background:var(--greenbg);color:var(--greentxt)}}
+.ve-null{{background:var(--gray2);color:var(--gray5)}}
+.verify-conf{{width:6px;height:6px;border-radius:50%;flex-shrink:0}}
+.conf-high{{background:#22C55E}}.conf-med{{background:#F59E0B}}.conf-low{{background:#EF4444}}
+.verify-toggle{{display:flex;gap:3px;flex-shrink:0}}
+.vt-btn{{width:26px;height:22px;border:1px solid var(--gray3);background:white;border-radius:4px;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;color:var(--gray5)}}
+.vt-btn:hover{{border-color:var(--blue2);color:var(--blue2)}}
+.vt-btn.selected-yes{{background:#DCFCE7;border-color:#22C55E;color:#166534;font-weight:600}}
+.vt-btn.selected-no{{background:#FEE2E2;border-color:#EF4444;color:#991B1B;font-weight:600}}
+.vt-btn.selected-unk{{background:var(--gray2);border-color:var(--gray4);color:var(--gray5);font-weight:600}}
+.override-badge{{font-size:10px;background:#FEF3C7;color:#92400E;border:1px solid #F59E0B;padding:1px 6px;border-radius:4px;margin-left:6px}}
+.confirm-area{{padding:12px;background:white;border-top:1px solid var(--gray3)}}
+.confirm-btn{{width:100%;padding:10px;background:var(--navy);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;font-family:var(--font);cursor:pointer;transition:background .15s}}
+.confirm-btn:hover{{background:var(--blue)}}
+.confirm-btn:disabled{{background:var(--gray3);color:var(--gray4);cursor:not-allowed}}
+.confirm-note{{font-size:10px;color:var(--gray4);text-align:center;margin-top:6px}}
+.summary-box{{background:white;border-radius:8px;border:1px solid var(--gray3);padding:12px}}
+.summary-label{{font-size:10px;font-weight:600;color:var(--gray4);letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}}
+.summary-text{{font-size:12px;color:var(--gray6);line-height:1.7}}
+.metrics{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}}
+.metric{{background:white;border:1px solid var(--gray3);border-radius:6px;padding:8px 10px;text-align:center}}
+.metric-n{{font-size:20px;font-weight:600;color:var(--gray7);line-height:1}}
+.metric-l{{font-size:10px;color:var(--gray4);margin-top:3px;text-transform:uppercase;letter-spacing:.07em}}
+.alert{{padding:8px 12px;border-radius:6px;font-size:12px;display:flex;gap:8px;align-items:flex-start}}
+.alert-amber{{background:var(--amberbg);color:var(--ambertxt);border:1px solid #FCD34D}}
+.scrollbar-thin::-webkit-scrollbar{{width:4px}}
+.scrollbar-thin::-webkit-scrollbar-track{{background:transparent}}
+.scrollbar-thin::-webkit-scrollbar-thumb{{background:var(--gray3);border-radius:2px}}
+</style>
+</head>
+<body>
+<div class="workspace">
+
+  <!-- LEFT: Transcript -->
+  <div class="left-panel">
+    <div class="panel-header">
+      <div>
+        <div class="panel-label">Patient Transcript — {_html.escape(patient_name)} · {_html.escape(case_type)}</div>
+      </div>
+      <div class="legend">
+        <div class="legend-item"><div class="dot" style="background:#EF4444"></div>Blocking</div>
+        <div class="legend-item"><div class="dot" style="background:#F59E0B"></div>Review</div>
+        <div class="legend-item"><div class="dot" style="background:#3B82F6"></div>Supporting</div>
+        <div class="legend-item"><div class="dot" style="background:#22C55E"></div>Cleared</div>
+        <div class="legend-item"><div class="dot" style="background:#7C3AED"></div>Revision</div>
+      </div>
+    </div>
+    <div class="tab-bar">
+      <div class="tab active" onclick="switchTab('annotated',this)">Annotated</div>
+      <div class="tab" onclick="switchTab('raw',this)">Raw</div>
+    </div>
+    <div class="transcript-scroll scrollbar-thin">
+      <div class="transcript-text" id="transcript-annotated">{annotated_html}</div>
+      <div class="transcript-text" id="transcript-raw" style="display:none">{_html.escape(transcript)}</div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Review Panel -->
+  <div class="right-panel">
+    <div class="panel-header" style="display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;width:100%">
+        <div>
+          <div class="panel-label">Routing Review</div>
+          <div style="font-size:15px;font-weight:600;color:var(--gray7);margin-top:2px">{_html.escape(patient_name)}</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+          {status_pills_html}
+        </div>
+      </div>
+      <div class="progress-bar" style="width:100%;border-radius:2px">
+        <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+      </div>
+      <div style="font-size:10px;color:var(--gray4);display:flex;justify-content:space-between">
+        <span id="progress-label">0 of {total_facts} facts confirmed</span>
+        <span id="progress-pct">0%</span>
+      </div>
+    </div>
+
+    <div class="right-scroll scrollbar-thin" id="right-scroll">
+
+      <!-- Summary -->
+      <div class="summary-box">
+        <div class="summary-label">Clinical Summary</div>
+        <div class="summary-text">{_html.escape(clinical_summary)}</div>
+      </div>
+
+      <!-- Metrics -->
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-n" style="color:#DC2626">{flags_true}</div>
+          <div class="metric-l">Flags</div>
+        </div>
+        <div class="metric">
+          <div class="metric-n" style="color:#F59E0B">{low_conf_count}</div>
+          <div class="metric-l">Low conf.</div>
+        </div>
+        <div class="metric">
+          <div class="metric-n" id="confirmed-count" style="color:#16A34A">0</div>
+          <div class="metric-l">Confirmed</div>
+        </div>
+      </div>
+
+      <!-- Rule Cards -->
+      {rule_cards_html if rule_cards_html else '<div class="summary-box"><div class="summary-text" style="color:var(--green)">✓ No SOP rules triggered — case may proceed.</div></div>'}
+
+      <!-- Verification -->
+      <div class="verify-section">
+        <div class="verify-header">
+          <div>
+            <div class="verify-title">Fact Verification</div>
+            <div class="verify-subtitle">Confirm or correct each extracted fact before finalising</div>
+          </div>
+        </div>
+        <div id="verify-rows">
+          {verify_rows_html}
+        </div>
+      </div>
+
+    </div>
+
+    <div class="confirm-area">
+      <button class="confirm-btn" id="confirm-btn" disabled>Confirm &amp; Finalise Record</button>
+      <div class="confirm-note" id="confirm-note">Confirm all {total_facts} facts to enable finalisation</div>
+    </div>
+  </div>
+</div>
+
+<div class="hl-tooltip" id="tooltip"></div>
+
+<script>
+const TOTAL_FACTS = {total_facts};
+const FACT_KEYS = {fact_keys_json};
+const FINAL_DATA = {final_data_json};
+
+let factState = {{}};
+FACT_KEYS.forEach(k => factState[k] = null);
+
+function switchTab(mode, el) {{
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('transcript-annotated').style.display = mode === 'annotated' ? '' : 'none';
+  document.getElementById('transcript-raw').style.display = mode === 'raw' ? '' : 'none';
+}}
+
+function handleHLClick(el) {{
+  document.querySelectorAll('.highlight.active-hl').forEach(e => e.classList.remove('active-hl'));
+  el.classList.add('active-hl');
+  const ruleId = el.dataset.rule;
+  const label = el.dataset.label || '';
+  const ruleCard = document.querySelector('[data-ruleid="' + ruleId + '"]');
+  if (ruleCard) {{
+    ruleCard.scrollIntoView({{behavior:'smooth',block:'nearest'}});
+    ruleCard.style.outline = '2px solid #2E86AB';
+    setTimeout(() => ruleCard.style.outline = '', 1200);
+  }}
+  const tt = document.getElementById('tooltip');
+  if (label) {{
+    tt.textContent = label;
+    tt.classList.add('show');
+    setTimeout(() => tt.classList.remove('show'), 2200);
+  }}
+}}
+
+document.addEventListener('mousemove', function(e) {{
+  const tt = document.getElementById('tooltip');
+  if (tt.classList.contains('show')) {{
+    tt.style.left = (e.clientX + 12) + 'px';
+    tt.style.top = (e.clientY - 28) + 'px';
+  }}
+}});
+
+function toggleRule(id) {{
+  const body = document.getElementById('body-' + id);
+  const ch = document.getElementById('chevron-' + id);
+  if (!body) return;
+  const isOpen = body.classList.contains('open');
+  body.classList.toggle('open');
+  ch.style.transform = isOpen ? '' : 'rotate(90deg)';
+}}
+
+function jumpToHL(e, ruleId) {{
+  e.stopPropagation();
+  const matches = document.querySelectorAll('[data-rule="' + ruleId + '"]');
+  if (matches.length) {{
+    document.getElementById('transcript-annotated').parentElement.scrollTop = 0;
+    // switch to annotated tab
+    const tabs = document.querySelectorAll('.tab');
+    tabs.forEach(t => t.classList.remove('active'));
+    tabs[0].classList.add('active');
+    document.getElementById('transcript-annotated').style.display = '';
+    document.getElementById('transcript-raw').style.display = 'none';
+    setTimeout(() => {{
+      matches[0].scrollIntoView({{behavior:'smooth',block:'center'}});
+      document.querySelectorAll('.highlight.active-hl').forEach(x => x.classList.remove('active-hl'));
+      matches[0].classList.add('active-hl');
+      setTimeout(() => matches[0].classList.remove('active-hl'), 2000);
+    }}, 50);
+  }}
+}}
+
+function setFact(e, key, val) {{
+  e.stopPropagation();
+  factState[key] = val;
+  rerenderRow(key);
+  updateProgress();
+}}
+
+function rerenderRow(key) {{
+  const row = document.getElementById('vrow-' + key);
+  if (!row) return;
+  ['Y','N','?'].forEach((v, i) => {{
+    const ids = ['ybtn-','nbtn-','ubtn-'];
+    const cls = ['selected-yes','selected-no','selected-unk'];
+    const btn = document.getElementById(ids[i] + key);
+    if (!btn) return;
+    btn.className = 'vt-btn' + (factState[key] === v ? ' ' + cls[i] : '');
+  }});
+  // override badge
+  const labelEl = row.querySelector('.verify-label');
+  const extracted = labelEl.querySelector('.ve-true, .ve-false, .ve-null');
+  const origLabel = extracted ? extracted.textContent : 'null';
+  const override = labelEl.querySelector('.override-badge');
+  if (factState[key] !== null && factState[key] !== origLabel) {{
+    if (!override) {{
+      const b = document.createElement('span');
+      b.className = 'override-badge';
+      b.textContent = 'overridden';
+      labelEl.appendChild(b);
+    }}
+  }} else {{
+    if (override) override.remove();
+  }}
+}}
+
+function updateProgress() {{
+  const done = FACT_KEYS.filter(k => factState[k] !== null).length;
+  const pct = Math.round(done / TOTAL_FACTS * 100);
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-label').textContent = done + ' of ' + TOTAL_FACTS + ' facts confirmed';
+  document.getElementById('progress-pct').textContent = pct + '%';
+  document.getElementById('confirmed-count').textContent = done;
+  const btn = document.getElementById('confirm-btn');
+  const note = document.getElementById('confirm-note');
+  if (done === TOTAL_FACTS) {{
+    btn.disabled = false;
+    btn.textContent = '✓ Confirm & Finalise Record';
+    note.textContent = 'All facts confirmed — ready to finalise';
+  }} else {{
+    btn.disabled = true;
+    btn.textContent = 'Confirm & Finalise Record';
+    note.textContent = 'Confirm all ' + TOTAL_FACTS + ' facts to enable finalisation';
+  }}
+}}
+
+document.getElementById('confirm-btn').addEventListener('click', function() {{
+  this.textContent = '✓ Record Finalised';
+  this.style.background = '#166534';
+  this.disabled = true;
+  document.getElementById('confirm-note').textContent = 'Case routed successfully · JSON exported';
+  const overrides = FACT_KEYS.filter(k => {{
+    const row = document.getElementById('vrow-' + k);
+    if (!row) return false;
+    const extracted = row.querySelector('.ve-true, .ve-false, .ve-null');
+    const origLabel = extracted ? extracted.textContent : 'null';
+    return factState[k] !== null && factState[k] !== origLabel;
+  }});
+  const finalOutput = Object.assign({{}}, FINAL_DATA, {{
+    Care_Team_Verification: Object.fromEntries(FACT_KEYS.map(k => [k, factState[k]])),
+    Record_Status: 'Verified'
+  }});
+  const blob = new Blob([JSON.stringify(finalOutput, null, 2)], {{type:'application/json'}});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'care_routing_' + Date.now() + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  if (overrides.length) {{
+    const el = document.getElementById('right-scroll');
+    const alert = document.createElement('div');
+    alert.className = 'alert alert-amber';
+    alert.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><div><strong>' + overrides.length + ' override(s) logged</strong> — corrections will be reviewed to improve extraction accuracy.</div>';
+    el.prepend(alert);
+  }}
+}});
+
+// Open first rule card by default
+if (FINAL_DATA.Logic_Results && FINAL_DATA.Logic_Results.length > 0) {{
+  const firstId = FINAL_DATA.Logic_Results[0].rule_id;
+  const firstBody = document.getElementById('body-' + firstId);
+  const firstChevron = document.getElementById('chevron-' + firstId);
+  if (firstBody) {{ firstBody.classList.add('open'); }}
+  if (firstChevron) {{ firstChevron.style.transform = 'rotate(90deg)'; }}
+}}
+</script>
+</body>
+</html>"""
+
+
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@300;400;500;600&display=swap');
 
   html, body, [class*="css"] {
-    font-family: 'DM Sans', sans-serif;
+    font-family: 'Sora', sans-serif;
   }
+  .main { background-color: #F8F7F4; }
+  .block-container { padding-top: 0; padding-bottom: 1rem; max-width: 100%; }
 
-  .main { background-color: #F7F6F3; }
-  .block-container { padding-top: 2rem; padding-bottom: 2rem; max-width: 1400px; }
-
-  /* Header */
+  /* Topbar */
   .nav-header {
     background: #0A1628;
     color: white;
-    padding: 1.25rem 2rem;
-    border-radius: 12px;
-    margin-bottom: 1.5rem;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-  }
-  .nav-header h1 {
-    font-family: 'DM Serif Display', serif;
-    font-size: 1.6rem;
-    margin: 0;
-    color: #E8F4FD;
-    letter-spacing: -0.5px;
-  }
-  .nav-header .subtitle {
-    font-size: 0.78rem;
-    color: #7BA3C8;
-    font-weight: 400;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-  .nav-badge {
-    background: #1A3A5C;
-    border: 1px solid #2A5A8C;
-    color: #7BC4E8;
-    padding: 0.25rem 0.75rem;
-    border-radius: 100px;
-    font-size: 0.7rem;
-    font-family: 'DM Mono', monospace;
-    margin-left: auto;
-  }
-
-  /* Panel cards */
-  .panel-card {
-    background: white;
-    border-radius: 12px;
-    border: 1px solid #E5E2DC;
-    padding: 1.5rem;
-    height: 100%;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  }
-  .panel-label {
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #9E9990;
-    margin-bottom: 0.75rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid #F0EDE8;
-  }
-
-  /* Status badge */
-  .status-pill {
-    display: inline-block;
-    padding: 0.35rem 1rem;
-    border-radius: 100px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: white;
-  }
-
-  /* Action cards */
-  .action-card {
-    border-left: 3px solid;
-    padding: 0.85rem 1rem;
-    border-radius: 0 8px 8px 0;
-    margin-bottom: 0.75rem;
-    background: #FAFAF8;
-  }
-  .action-rule-id {
-    font-family: 'DM Mono', monospace;
-    font-size: 0.68rem;
-    color: #9E9990;
-    margin-bottom: 0.2rem;
-  }
-  .action-status {
-    font-weight: 600;
-    font-size: 0.82rem;
-    margin-bottom: 0.3rem;
-  }
-  .action-text {
-    font-size: 0.85rem;
-    color: #3D3A35;
-    line-height: 1.5;
-  }
-
-  /* Fact table */
-  .fact-row {
-    display: flex;
-    align-items: flex-start;
-    padding: 0.6rem 0;
-    border-bottom: 1px solid #F5F2EE;
-    gap: 1rem;
-  }
-  .fact-label {
-    font-size: 0.78rem;
-    color: #7A756E;
-    width: 200px;
-    flex-shrink: 0;
-    padding-top: 0.1rem;
-  }
-  .fact-value {
-    font-size: 0.82rem;
-    font-weight: 500;
-    color: #1C1A17;
-    flex: 1;
-  }
-  .fact-true { color: #DC4A3A; }
-  .fact-false { color: #2D7D4A; }
-  .fact-null { color: #BCBAB5; font-style: italic; }
-
-  /* Transcript display */
-  .transcript-box {
-    background: #FAFAF8;
-    border: 1px solid #EAE7E2;
-    border-radius: 8px;
-    padding: 1rem;
-    font-size: 0.83rem;
-    line-height: 1.7;
-    color: #3D3A35;
-    max-height: 520px;
-    overflow-y: auto;
-    font-family: 'DM Mono', monospace;
-    white-space: pre-wrap;
-  }
-
-  /* Summary box */
-  .summary-box {
-    background: #EEF4FB;
-    border: 1px solid #C5D9EE;
-    border-radius: 8px;
-    padding: 1rem 1.25rem;
-    font-size: 0.88rem;
-    color: #1A3A5C;
-    line-height: 1.65;
-    margin-bottom: 1rem;
-  }
-
-  /* Patient header */
-  .patient-header {
+    padding: 10px 20px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 1rem;
-    padding-bottom: 0.75rem;
-    border-bottom: 1px solid #EAE7E2;
+    margin-bottom: 0.75rem;
   }
-  .patient-name {
-    font-family: 'DM Serif Display', serif;
-    font-size: 1.35rem;
-    color: #1C1A17;
-  }
-  .case-type-tag {
-    background: #F0EDE8;
-    color: #6B6560;
-    padding: 0.25rem 0.75rem;
-    border-radius: 6px;
-    font-size: 0.75rem;
+  .nav-header .logo {
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.06em;
+    color: #7BA3C8;
+    letter-spacing: .12em;
     text-transform: uppercase;
   }
-
-  /* JSON viewer */
-  .json-block {
-    background: #1C1A17;
-    color: #A8E6CF;
-    border-radius: 8px;
-    padding: 1rem;
-    font-family: 'DM Mono', monospace;
-    font-size: 0.75rem;
-    max-height: 400px;
-    overflow-y: auto;
-    line-height: 1.6;
+  .nav-header .title {
+    font-size: 15px;
+    font-weight: 600;
+    color: white;
+  }
+  .nav-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .nav-pill {
+    background: rgba(255,255,255,.08);
+    color: #CBD5E1;
+    border: none;
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: default;
+    font-family: 'Sora', sans-serif;
+  }
+  .nav-pill.active {
+    background: rgba(255,255,255,.18);
+    color: white;
+  }
+  .nav-badge {
+    background: #1A3A5C;
+    color: #7BC4E8;
+    border: 1px solid #2A5A8C;
+    padding: 3px 10px;
+    border-radius: 100px;
+    font-size: 10px;
+    font-family: 'IBM Plex Mono', monospace;
   }
 
-  /* Verification checks */
-  .verify-item {
-    background: #FAFAF8;
-    border: 1px solid #EAE7E2;
-    border-radius: 8px;
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.5rem;
-    font-size: 0.84rem;
-  }
-
-  /* Upload zone */
+  /* Upload hint */
   .upload-hint {
     text-align: center;
     padding: 2rem;
-    color: #9E9990;
+    color: #9CA3AF;
     font-size: 0.88rem;
-  }
-
-  /* Statemet counters */
-  .metric-row {
-    display: flex;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-  }
-  .metric-box {
-    flex: 1;
-    background: #F7F6F3;
-    border: 1px solid #EAE7E2;
-    border-radius: 8px;
-    padding: 0.75rem;
-    text-align: center;
-  }
-  .metric-num {
-    font-family: 'DM Serif Display', serif;
-    font-size: 1.6rem;
-    color: #1C1A17;
-    line-height: 1;
-  }
-  .metric-lbl {
-    font-size: 0.68rem;
-    color: #9E9990;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-top: 0.2rem;
   }
 
   /* Streamlit overrides */
@@ -282,24 +802,22 @@ st.markdown("""
     border-radius: 8px;
     font-weight: 600;
     padding: 0.5rem 1.5rem;
-    font-family: 'DM Sans', sans-serif;
+    font-family: 'Sora', sans-serif;
     letter-spacing: 0.02em;
     transition: background 0.2s;
   }
   div[data-testid="stButton"] button:hover {
-    background: #1A3A5C;
+    background: #1A4F72;
   }
   .stTextArea textarea {
-    font-family: 'DM Mono', monospace;
+    font-family: 'IBM Plex Mono', monospace;
     font-size: 0.82rem;
     border-radius: 8px;
-    border: 1px solid #EAE7E2;
+    border: 1px solid #E5E2DC;
   }
-  .stAlert {
-    border-radius: 8px;
-  }
+  .stAlert { border-radius: 8px; }
   div[data-testid="stExpander"] {
-    border: 1px solid #EAE7E2 !important;
+    border: 1px solid #E5E2DC !important;
     border-radius: 8px !important;
   }
 </style>
@@ -318,7 +836,7 @@ Care Team: "Okay, we'll note that down. Finally, any pending major dental work n
 Sarah T: "Yes, I just had my clean-up done in May, so I'm good there."
 Care Team: "Great, thanks Sarah. We'll finalize this part of your profile and get you set up for an initial consult." """,
 
-    "Sample 2 — Bob L. (Joint)": """[Care Team] Hi Bob, this is the Carrum care team. We are wrapping up your initial profile to get you matched with your surgeon. We need to clarify a few answers from your questionnaire.
+    "Sample 2 — Bob L. (Joint)": """[Care Team] Hi Bob, this is the Care Navigator team. We are wrapping up your initial profile to get you matched with your surgeon. We need to clarify a few answers from your questionnaire.
 [Bob L] ok what do you need? my hip is killing me.
 [Care Team] We're here to help. First, can you confirm if you have used any prescription pain medications, even just sometimes, to manage the hip pain?
 [Bob L] yeah. My PCP gave me oxycodone 5mg to take when it was really bad, but i've been on it pretty much daily for 2 years.
@@ -331,7 +849,7 @@ Care Team: "Great, thanks Sarah. We'll finalize this part of your profile and ge
 [Care Team] Got it. Thanks Bob! We have what we need. We'll be tough on next steps in the next 48 hours.""",
 
     "Sample 3 — Maria V. (Joint)": """Care Team: "Hi Maria, I'm just trying to verify the final pieces of information for your intake so we can route your case appropriately. We need to check on your comorbidities. Do you have a history of HIV, AIDS, end-stage renal failure, or active cancer treatment?"
-Maria V: "Look, I've already answered these questions for my regular doctor three times this month. Why does Carrum need them again? I don't have any of those things. I'm just getting old and my knee is falling apart because nobody will help me!"
+Maria V: "Look, I've already answered these questions for my regular doctor three times this month. Why does Care Navigator need them again? I don't have any of those things. I'm just getting old and my knee is falling apart because nobody will help me!"
 Care Team: "I understand the frustration, Maria. We just want to make sure we have the most current info for the surgeon. How about your blood sugar? If you have diabetes, do you know what your last HbA1c lab result was? The most recent one."
 Maria V: "I just had my physical last week and my doctor was annoyed because it was a 7.4. He's always nagging me to work on that, but it's hard when you can't walk to exercise!"
 Care Team: "I hear you. That 7.4 is a helpful number for us to have. Let's talk about lifestyle—and please be honest so we can keep you safe during surgery. Are you currently an active smoker, or have you quit within the last three months?"
@@ -344,32 +862,25 @@ Care Team: "Perfect, that's exactly the information we need. And Maria, I hear t
 Maria V: "I know... I just want to be able to walk to the mailbox without sitting down. It's a lot to manage on my own."
 Care Team: "We're going to help you manage it. Here is what happens next: I'm going to review your details and follow up by Thursday afternoon with a clear roadmap for the next few weeks."
 Maria V: "Yes. Thursday afternoon. I'll be waiting for the call. Thank you for listening to me complain."
-Care Team: "You aren't complaining, Maria—you're advocating for your health. We're glad to have you with Carrum." """,
+Care Team: "You aren't complaining, Maria—you're advocating for your health. We're glad to have you with Care Navigator." """,
 }
-
-# ── Helper Renderers ──────────────────────────────────────────────────────────
-
-def render_bool_fact(val):
-    if val is True:
-        return '<span class="fact-value fact-true">✓ Yes</span>'
-    elif val is False:
-        return '<span class="fact-value fact-false">✗ No</span>'
-    else:
-        return '<span class="fact-value fact-null">not mentioned</span>'
-
-def render_status_pill(status: str) -> str:
-    color = STATUS_COLORS.get(status, "#6B7280")
-    return f'<span class="status-pill" style="background:{color}">{status}</span>'
 
 # ── Header ────────────────────────────────────────────────────────────────────
 
 st.markdown("""
 <div class="nav-header">
-  <div>
-    <div class="subtitle">Carrum Health</div>
-    <h1>Clinical Routing Navigator</h1>
+  <div class="topbar-brand">
+    <div>
+      <div class="logo">Care Navigator</div>
+      <div class="title">Clinical Routing Navigator</div>
+    </div>
   </div>
-  <div class="nav-badge">Clinical Processor v1.0</div>
+  <div class="nav-right">
+    <button class="nav-pill active">Review</button>
+    <button class="nav-pill">History</button>
+    <button class="nav-pill">Admin</button>
+    <div class="nav-badge">Clinical Processor v1.0</div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -429,167 +940,23 @@ if process_btn:
                 st.error(f"Processing error: {str(e)}")
                 st.stop()
 
-# Display results from session state
+# ── Results ───────────────────────────────────────────────────────────────────
+
 if "result" in st.session_state:
     result = st.session_state["result"]
-    pf = result["Patient_Facts"]
-    details = pf.get("extracted_details", {})
-    actions = result["Recommended_Actions"]
-    logic = result["Logic_Results"]
-    overall = result["Overall_Case_Status"]
-    overall_color = STATUS_COLORS.get(overall, "#6B7280")
+    workspace_html = build_workspace_html(result, st.session_state["transcript"])
+    components.html(workspace_html, height=880, scrolling=False)
 
-    # ── Top summary bar ──
-    patient_name = pf.get("patient_name") or "Unknown Patient"
-    case_type = pf.get("case_type", "Unknown")
-
-    st.markdown(f"""
-    <div class="patient-header">
-      <div class="patient-name">{patient_name}</div>
-      <div style="display:flex;gap:0.75rem;align-items:center;">
-        <span class="case-type-tag">{case_type}</span>
-        {render_status_pill(overall)}
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Metrics row
-    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-    with col_m1:
-        st.markdown(f"""<div class="metric-box"><div class="metric-num">{len(logic)}</div><div class="metric-lbl">Rules Triggered</div></div>""", unsafe_allow_html=True)
-    with col_m2:
-        st.markdown(f"""<div class="metric-box"><div class="metric-num">{len(actions)}</div><div class="metric-lbl">Actions Required</div></div>""", unsafe_allow_html=True)
-    with col_m3:
-        flags_true = sum(1 for v in result["SOP_Flags"].values() if v)
-        st.markdown(f"""<div class="metric-box"><div class="metric-num">{flags_true}</div><div class="metric-lbl">Flags Raised</div></div>""", unsafe_allow_html=True)
-    with col_m4:
-        st.markdown(f"""<div class="metric-box"><div class="metric-num" style="color:{overall_color}">{overall}</div><div class="metric-lbl">Overall Status</div></div>""", unsafe_allow_html=True)
-
+    # Raw JSON expander below the workspace
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Main two-column layout ──
-    left_col, right_col = st.columns([1, 1], gap="medium")
-
-    # LEFT: Transcript + Extracted Facts
-    with left_col:
-        st.markdown('<div class="panel-label">Original Transcript</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="transcript-box">{st.session_state["transcript"]}</div>', unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="panel-label">Extracted Clinical Facts</div>', unsafe_allow_html=True)
-
-        facts_display = [
-            ("Dental visit within 6 months", render_bool_fact(details.get("dental_visit_within_6_months"))),
-            ("Pending dental work", render_bool_fact(details.get("dental_pending_work"))),
-            ("Active smoker", render_bool_fact(details.get("active_smoker"))),
-            ("Formal PT history", render_bool_fact(details.get("has_pt_history"))),
-            ("PT description", f'<span class="fact-value">{details.get("pt_description") or "<span class=\'fact-null\'>—</span>"}</span>'),
-            ("HbA1c value", f'<span class="fact-value">{details.get("hba1c_value") or "<span class=\'fact-null\'>not mentioned</span>"}</span>'),
-            ("Daily opioid use", render_bool_fact(details.get("daily_opioid_use"))),
-            ("Opioid duration (months)", f'<span class="fact-value">{details.get("opioid_duration_months") or "<span class=\'fact-null\'>—</span>"}</span>'),
-            ("Opioid medication", f'<span class="fact-value">{details.get("opioid_medication") or "<span class=\'fact-null\'>—</span>"}</span>'),
-            ("Prior weight-loss surgery", render_bool_fact(details.get("prior_weight_loss_surgery"))),
-            ("Prior surgery description", f'<span class="fact-value">{details.get("prior_surgery_description") or "<span class=\'fact-null\'>—</span>"}</span>'),
-            ("Recent EGD (< 3 months)", render_bool_fact(details.get("recent_egd"))),
-            ("Registered Dietician", render_bool_fact(details.get("has_registered_dietician"))),
-            ("Chronic infections", f'<span class="fact-value">{details.get("chronic_infections") or "<span class=\'fact-null\'>—</span>"}</span>'),
-        ]
-
-        for label, val_html in facts_display:
-            st.markdown(f"""
-            <div class="fact-row">
-              <div class="fact-label">{label}</div>
-              {val_html}
-            </div>
-            """, unsafe_allow_html=True)
-
-    # RIGHT: Summary + Recommendations + Verification
-    with right_col:
-        st.markdown('<div class="panel-label">Clinical Summary</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="summary-box">{pf.get("clinical_summary", "No summary generated.")}</div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="panel-label">SOP-Driven Recommendations</div>', unsafe_allow_html=True)
-
-        if not actions:
-            st.success("✅ No blocking SOP conditions identified. Case may proceed.")
-        else:
-            for action in actions:
-                color = STATUS_COLORS.get(action["status"], "#6B7280")
-                st.markdown(f"""
-                <div class="action-card" style="border-left-color:{color}">
-                  <div class="action-rule-id">{action["rule_id"]}</div>
-                  <div class="action-status" style="color:{color}">{action["status"]}</div>
-                  <div class="action-text">{action["action"]}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-        # Verification section
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="panel-label">Human-in-the-Loop Verification</div>', unsafe_allow_html=True)
-        st.caption("Review the extracted facts below. Correct any that appear inaccurate before finalizing.")
-
-        verify_facts = {
-            "dental_visit_within_6_months": ("Dental visit within 6 months?", details.get("dental_visit_within_6_months")),
-            "active_smoker": ("Active smoker?", details.get("active_smoker")),
-            "has_pt_history": ("Has formal PT history?", details.get("has_pt_history")),
-            "hba1c_elevated": ("HbA1c > 7.0?", result["SOP_Flags"].get("hba1c_elevated")),
-            "daily_opioid_over_3_months": ("Daily opioid use > 3 months?", result["SOP_Flags"].get("daily_opioid_over_3_months")),
-            "prior_weight_loss_surgery": ("Prior weight-loss surgery?", details.get("prior_weight_loss_surgery")),
-            "recent_egd": ("Recent EGD (< 3 months)?", details.get("recent_egd")),
-            "has_registered_dietician": ("Has Registered Dietician?", details.get("has_registered_dietician")),
-        }
-
-        corrections = {}
-        for key, (label, extracted_val) in verify_facts.items():
-            if extracted_val is None:
-                options = ["Unknown / Not Mentioned", "Yes", "No"]
-                default_idx = 0
-            elif extracted_val:
-                options = ["Yes", "No", "Unknown / Not Mentioned"]
-                default_idx = 0
-            else:
-                options = ["No", "Yes", "Unknown / Not Mentioned"]
-                default_idx = 0
-
-            chosen = st.selectbox(
-                label,
-                options,
-                index=default_idx,
-                key=f"verify_{key}"
-            )
-            corrections[key] = chosen
-
-        if st.button("✅  Confirm & Finalize Record", use_container_width=True):
-            final_output = {
-                "Patient_Facts": pf,
-                "SOP_Flags": result["SOP_Flags"],
-                "Logic_Results": result["Logic_Results"],
-                "Recommended_Actions": result["Recommended_Actions"],
-                "Overall_Case_Status": result["Overall_Case_Status"],
-                "Care_Team_Verification": corrections,
-                "Record_Status": "Verified",
-            }
-            st.success("✅ Record verified and finalized by Care Team.")
-            st.download_button(
-                label="⬇ Download Finalized JSON",
-                data=json.dumps(final_output, indent=2),
-                file_name=f"carrum_{(patient_name or 'patient').replace(' ', '_').lower()}_routing.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-
-    # ── Raw JSON Output ──
-    st.markdown("<br>", unsafe_allow_html=True)
-    with st.expander("🔍 View Raw Validated JSON Output", expanded=False):
-        st.markdown('<div class="panel-label">Validated JSON — Logic Engine Output</div>', unsafe_allow_html=True)
+    with st.expander("🔍 View Raw Logic Engine JSON", expanded=False):
         st.json(result)
-
 else:
     # Empty state
     st.markdown("""
     <div class="upload-hint">
       <div style="font-size:2.5rem;margin-bottom:0.75rem;">🏥</div>
-      <div style="font-weight:600;color:#3D3A35;margin-bottom:0.4rem;">No transcript loaded</div>
+      <div style="font-weight:600;color:#374151;margin-bottom:0.4rem;">No transcript loaded</div>
       <div>Select a sample above or paste/upload a patient transcript to begin routing analysis.</div>
     </div>
     """, unsafe_allow_html=True)
@@ -597,6 +964,6 @@ else:
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
-    '<div style="text-align:center;font-size:0.72rem;color:#BCBAB5;font-family:\'DM Mono\',monospace;">Carrum Health · Clinical Routing Navigator · Automated Logic Engine · For internal Care Team use only</div>',
+    '<div style="text-align:center;font-size:0.72rem;color:#9CA3AF;font-family:\'IBM Plex Mono\',monospace;">Care Navigator · Clinical Routing Navigator · Automated Logic Engine · For internal Care Team use only</div>',
     unsafe_allow_html=True
 )
