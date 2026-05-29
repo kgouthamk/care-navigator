@@ -651,7 +651,7 @@ document.addEventListener('mousemove', function(e) {{
 
 function autoHeight() {{
   var ws = document.querySelector('.workspace');
-  var h = ws ? Math.ceil(ws.getBoundingClientRect().bottom) + 16 : document.body.scrollHeight + 16;
+  var h = ws ? ws.offsetTop + ws.offsetHeight + 16 : document.documentElement.offsetHeight + 16;
   window.parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: h}}, '*');
 }}
 
