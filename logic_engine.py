@@ -19,6 +19,8 @@ SOP_RULES = [
         "category": "General",
         "finding": "Dental visit > 6 months ago OR pending dental work",
         "fact_key": "dental_clearance_needed",
+        # Two evidence_map keys can each independently trigger this flag; try both.
+        "evidence_key": ["dental_last_visit_within_6_months", "dental_pending_work"],
         "trigger_value": True,
         "case_status": "Action Required",
         "action": "Instruct patient to complete dental clearance before Consultation.",
@@ -29,6 +31,7 @@ SOP_RULES = [
         "category": "Joint",
         "finding": "Active Smoker (or quit < 3 months)",
         "fact_key": "active_smoker",
+        "evidence_key": "active_smoker",
         "trigger_value": True,
         "case_status": "Deferred",
         "action": "Refer to Smoking Cessation education/support; pause case for 3 months.",
@@ -39,6 +42,8 @@ SOP_RULES = [
         "category": "Joint",
         "finding": "No attempt at PT / Exercise",
         "fact_key": "no_pt_history",
+        # Negated flag: flag is True when extraction key is False.
+        "evidence_key": "has_pt_history",
         "trigger_value": True,
         "case_status": "Ineligible",
         "action": "Refer to 6-12 week conservative physical therapy trial.",
@@ -49,6 +54,8 @@ SOP_RULES = [
         "category": "Joint",
         "finding": "HbA1c > 7.0",
         "fact_key": "hba1c_elevated",
+        # Threshold flag: flag is True when extracted numeric value exceeds 7.0.
+        "evidence_key": "hba1c_value",
         "trigger_value": True,
         "case_status": "Review",
         "action": "Flag for Clinical MD Review for glucose optimization.",
@@ -59,6 +66,7 @@ SOP_RULES = [
         "category": "Joint",
         "finding": "Daily Opioid use > 3 months",
         "fact_key": "daily_opioid_over_3_months",
+        "evidence_key": "daily_opioid_use",
         "trigger_value": True,
         "case_status": "High Complexity",
         "action": 'Flag for Anesthesia "High Risk" Consult.',
@@ -69,6 +77,7 @@ SOP_RULES = [
         "category": "Bariatric",
         "finding": "History of prior weight-loss surgery",
         "fact_key": "prior_weight_loss_surgery",
+        "evidence_key": "prior_weight_loss_surgery",
         "trigger_value": True,
         "case_status": "Revision Case",
         "action": "Flag as Revision Case; requires specialized surgical review.",
@@ -79,6 +88,8 @@ SOP_RULES = [
         "category": "Bariatric",
         "finding": "No Endoscopy (EGD) in last 3 months",
         "fact_key": "no_recent_egd",
+        # Negated flag: flag is True when extraction key is False.
+        "evidence_key": "recent_egd_within_3_months",
         "trigger_value": True,
         "case_status": "Action Required",
         "action": "Instruct patient to schedule EGD for after Consultation.",
@@ -89,6 +100,8 @@ SOP_RULES = [
         "category": "Bariatric",
         "finding": "No Registered Dietician (RD) identified",
         "fact_key": "no_registered_dietician",
+        # Negated flag: flag is True when extraction key is False.
+        "evidence_key": "has_registered_dietician",
         "trigger_value": True,
         "case_status": "Hold",
         "action": "Provide in-network RD list; patient must confirm RD before referral.",
