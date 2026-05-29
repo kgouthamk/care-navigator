@@ -623,7 +623,7 @@ function switchTab(mode, el) {{
   document.getElementById('transcript-annotated').style.display = mode === 'annotated' ? '' : 'none';
   document.getElementById('transcript-raw').style.display = mode === 'raw' ? '' : 'none';
   document.getElementById('transcript-json').style.display = mode === 'json' ? '' : 'none';
-  setTimeout(autoHeight, 50);
+  autoHeight();
 }}
 
 function handleHLClick(el) {{
@@ -654,7 +654,9 @@ document.addEventListener('mousemove', function(e) {{
 }});
 
 function autoHeight() {{
-  window.parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: document.documentElement.scrollHeight + 16}}, '*');
+  requestAnimationFrame(() => {{
+    window.parent.postMessage({{isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: document.documentElement.scrollHeight + 24}}, '*');
+  }});
 }}
 
 function toggleRule(id) {{
@@ -665,7 +667,6 @@ function toggleRule(id) {{
   body.classList.toggle('open');
   ch.style.transform = isOpen ? '' : 'rotate(90deg)';
   autoHeight();
-  setTimeout(autoHeight, 250);
 }}
 
 function jumpToHL(e, ruleId) {{
@@ -782,7 +783,23 @@ if (FINAL_DATA.Logic_Results && FINAL_DATA.Logic_Results.length > 0) {{
   if (firstBody) {{ firstBody.classList.add('open'); }}
   if (firstChevron) {{ firstChevron.style.transform = 'rotate(90deg)'; }}
 }}
-window.addEventListener('load', function() {{ setTimeout(autoHeight, 150); }});
+// Multi-layered safety net: observe size + DOM changes + lifecycle events.
+// Any one would usually suffice — together they're bulletproof.
+if (typeof ResizeObserver !== 'undefined') {{
+  const ro = new ResizeObserver(() => autoHeight());
+  ro.observe(document.documentElement);
+  ro.observe(document.body);
+}}
+if (typeof MutationObserver !== 'undefined') {{
+  const mo = new MutationObserver(() => autoHeight());
+  mo.observe(document.body, {{childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style']}});
+}}
+window.addEventListener('load', autoHeight);
+window.addEventListener('resize', autoHeight);
+// Re-fire after fonts load (can change line heights and total page height)
+if (document.fonts && document.fonts.ready) {{
+  document.fonts.ready.then(autoHeight);
+}}
 </script>
 </body>
 </html>"""
